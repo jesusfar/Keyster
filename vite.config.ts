@@ -81,6 +81,21 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/githubapi/, ''),
       },
+      '/api/gitlabapi': {
+        target: 'https://gitlab.com/api/v4',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/gitlabapi/, ''),
+      },
+      '/api/sourcegraph': {
+        target: 'https://sourcegraph.com/.api',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/sourcegraph/, ''),
+      },
+      '/api/grepapp': {
+        target: 'https://grep.app/api',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/grepapp/, ''),
+      },
     },
   },
 })

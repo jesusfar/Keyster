@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { PROVIDER_PATTERNS, scanForKeys } from '../lib/scanner'
-import type { ScanResult, ScanProgress, KeyStatus, TimeRange } from '../lib/scanner'
+import type { ScanResult, ScanProgress, KeyStatus, TimeRange, ScanSourcePlatform } from '../lib/scanner'
 import { useToast } from './ToastContext'
 import './Scanner.css'
 
@@ -76,16 +76,32 @@ function downloadFile(content: string, filename: string, mime: string) {
   URL.revokeObjectURL(url)
 }
 
+// ─── Source Definitions ──────────────────────────────────────────────────────
+const SOURCE_OPTIONS: { id: ScanSourcePlatform; label: string; icon: string; needsToken: boolean; tokenLabel?: string }[] = [
+  { id: 'github',      label: 'GitHub',      icon: '🐙', needsToken: true,  tokenLabel: 'GitHub PAT' },
+  { id: 'gitlab',      label: 'GitLab',      icon: '🦊', needsToken: true,  tokenLabel: 'GitLab PAT' },
+  { id: 'sourcegraph', label: 'Sourcegraph', icon: '🔭', needsToken: false },
+  { id: 'grep.app',    label: 'grep.app',    icon: '🔎', needsToken: false },
+]
+
 // ─── Component ───────────────────────────────────────────────────────────────
 export function Scanner() {
   const [selectedProviders, setSelectedProviders] = useState<string[]>(
     PROVIDER_PATTERNS.map(p => p.provider)
   )
+  const [selectedSources, setSelectedSources] = useState<ScanSourcePlatform[]>(() => {
+    const saved = localStorage.getItem('keyster_scan_sources')
+    return saved ? JSON.parse(saved) : ['github']
+  })
   const [githubToken, setGithubToken] = useState(() => 
     localStorage.getItem('keyster_github_token') || ''
   )
+  const [gitlabToken, setGitlabToken] = useState(() =>
+    localStorage.getItem('keyster_gitlab_token') || ''
+  )
   const [results, setResults] = useState<ScanResult[]>(() => loadResults())
   const [filterProvider, setFilterProvider] = useState<string>('all')
+  const [filterSource, setFilterSource] = useState<string>('all')
   const [timeRange, setTimeRange] = useState<TimeRange>('7d')
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [continuousMode, setContinuousMode] = useState(false)
@@ -107,6 +123,11 @@ export function Scanner() {
     if (results.length > 0) saveResults(results)
   }, [results])
 
+  // Persist selected sources
+  useEffect(() => {
+    localStorage.setItem('keyster_scan_sources', JSON.stringify(selectedSources))
+  }, [selectedSources])
+
   const toggleProvider = (provider: string) => {
     setSelectedProviders(prev =>
       prev.includes(provider)
@@ -115,10 +136,18 @@ export function Scanner() {
     )
   }
 
+  const toggleSource = (source: ScanSourcePlatform) => {
+    setSelectedSources(prev =>
+      prev.includes(source)
+        ? prev.filter(s => s !== source)
+        : [...prev, source]
+    )
+  }
+
   const selectAll = () => setSelectedProviders(PROVIDER_PATTERNS.map(p => p.provider))
   const selectNone = () => setSelectedProviders([])
 
-  const handleTokenChange = (value: string) => {
+  const handleGithubTokenChange = (value: string) => {
     setGithubToken(value)
     if (value) {
       localStorage.setItem('keyster_github_token', value)
@@ -127,6 +156,22 @@ export function Scanner() {
     }
   }
 
+  const handleGitlabTokenChange = (value: string) => {
+    setGitlabToken(value)
+    if (value) {
+      localStorage.setItem('keyster_gitlab_token', value)
+    } else {
+      localStorage.removeItem('keyster_gitlab_token')
+    }
+  }
+
+  const needsGithubToken = selectedSources.includes('github')
+  const needsGitlabToken = selectedSources.includes('gitlab')
+  const hasAnyFreeSource = selectedSources.some(s => s === 'sourcegraph' || s === 'grep.app')
+  const canStartScan = selectedProviders.length > 0 
+    && selectedSources.length > 0
+    && (hasAnyFreeSource || (needsGithubToken && githubToken.trim()) || (needsGitlabToken && gitlabToken.trim()))
+
   const runScanCycle = useCallback(async (controller: AbortController, keepResults: boolean) => {
     if (!keepResults) setResults([])
 
@@ -134,6 +179,8 @@ export function Scanner() {
       await scanForKeys({
         providers: selectedProviders,
         githubToken: githubToken.trim(),
+        gitlabToken: gitlabToken.trim() || undefined,
+        sources: selectedSources,
         timeRange,
         maxPagesPerQuery: 3,
         onProgress: (p) => setProgress(p),
@@ -158,14 +205,18 @@ export function Scanner() {
     } catch {
       // handled in scanner
     }
-  }, [selectedProviders, githubToken, timeRange, soundEnabled])
+  }, [selectedProviders, selectedSources, githubToken, gitlabToken, timeRange, soundEnabled])
 
   const startScan = useCallback(async () => {
     if (selectedProviders.length === 0) {
       showToast('Select at least one provider', 'error')
       return
     }
-    if (!githubToken.trim()) {
+    if (selectedSources.length === 0) {
+      showToast('Select at least one search source', 'error')
+      return
+    }
+    if (needsGithubToken && !githubToken.trim() && !hasAnyFreeSource && !needsGitlabToken) {
       showToast('Enter a GitHub Personal Access Token', 'error')
       return
     }
@@ -187,7 +238,7 @@ export function Scanner() {
       if (controller.signal.aborted) break
       await runScanCycle(controller, true) // Keep existing results
     }
-  }, [selectedProviders, githubToken, continuousMode, runScanCycle, showToast])
+  }, [selectedProviders, selectedSources, githubToken, needsGithubToken, needsGitlabToken, hasAnyFreeSource, continuousMode, runScanCycle, showToast])
 
   const stopScan = () => {
     continuousRef.current = false
@@ -220,10 +271,11 @@ export function Scanner() {
 
   // Filter and sort results (valid keys first)
   const statusOrder: Record<string, number> = { valid: 0, checking: 1, rate_limited: 2, error: 3, invalid: 4 }
-  const filteredResults = (filterProvider === 'all'
-    ? results
-    : results.filter(r => r.provider === filterProvider)
-  ).slice().sort((a, b) => (statusOrder[a.keyStatus] ?? 9) - (statusOrder[b.keyStatus] ?? 9))
+  const filteredResults = results
+    .filter(r => filterProvider === 'all' || r.provider === filterProvider)
+    .filter(r => filterSource === 'all' || r.source === filterSource)
+    .slice()
+    .sort((a, b) => (statusOrder[a.keyStatus] ?? 9) - (statusOrder[b.keyStatus] ?? 9))
 
   // Stats
   const statsByProvider = results.reduce((acc, r) => {
@@ -231,9 +283,26 @@ export function Scanner() {
     return acc
   }, {} as Record<string, number>)
 
+  const statsBySource = results.reduce((acc, r) => {
+    acc[r.source] = (acc[r.source] || 0) + 1
+    return acc
+  }, {} as Record<string, number>)
+
   const validCount = results.filter(r => r.keyStatus === 'valid').length
   const invalidCount = results.filter(r => r.keyStatus === 'invalid').length
   const checkingCount = results.filter(r => r.keyStatus === 'checking').length
+
+  const sourceLabel = (source: string) => {
+    switch (source) {
+      case 'code': return '📄 GitHub Code'
+      case 'gist': return '📋 Gist'
+      case 'commit': return '📝 Commit'
+      case 'gitlab': return '🦊 GitLab'
+      case 'sourcegraph': return '🔭 Sourcegraph'
+      case 'grep.app': return '🔎 grep.app'
+      default: return source
+    }
+  }
 
   return (
     <div className="scanner-page">
@@ -245,9 +314,9 @@ export function Scanner() {
               <circle cx="11" cy="11" r="8" />
               <path d="m21 21-4.3-4.3" />
             </svg>
-            GitHub Key Scanner
+            Multi-Source Key Scanner
           </h1>
-          <p>Scan public GitHub repositories for exposed AI API keys</p>
+          <p>Scan GitHub, GitLab, Sourcegraph & grep.app for exposed AI API keys</p>
         </div>
         <div className="header-actions">
           {results.length > 0 && (
@@ -263,32 +332,85 @@ export function Scanner() {
       <div className="scanner-body">
         {/* Config Panel */}
         <div className="scanner-config">
-          {/* GitHub Token */}
+          {/* Search Sources */}
           <div className="config-section">
             <label className="config-label">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                <circle cx="12" cy="12" r="10" />
+                <path d="M2 12h20" />
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
               </svg>
-              GitHub Personal Access Token
+              Search Sources
             </label>
-            <div className="token-input-row">
-              <input
-                type="password"
-                placeholder="ghp_xxxxxxxxxxxx"
-                value={githubToken}
-                onChange={(e) => handleTokenChange(e.target.value)}
-                className="token-input"
-                disabled={isScanning}
-              />
-              {githubToken && (
-                <button className="token-clear-btn" title="Clear token" onClick={() => handleTokenChange('')}>✕</button>
-              )}
+            <div className="source-grid">
+              {SOURCE_OPTIONS.map(src => (
+                <label key={src.id} className={`source-chip ${selectedSources.includes(src.id) ? 'active' : ''} source-chip-${src.id.replace('.', '')}`}>
+                  <input type="checkbox" checked={selectedSources.includes(src.id)} onChange={() => toggleSource(src.id)} disabled={isScanning} />
+                  <span className="chip-icon">{src.icon}</span>
+                  <span className="chip-label">{src.label}</span>
+                  {!src.needsToken && <span className="chip-free">FREE</span>}
+                </label>
+              ))}
             </div>
-            <span className="config-hint">
-              Create at <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer">github.com/settings/tokens</a> — no special scopes needed
-            </span>
           </div>
+
+          {/* GitHub Token — shown when GitHub selected */}
+          {needsGithubToken && (
+            <div className="config-section">
+              <label className="config-label">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+                GitHub Token
+              </label>
+              <div className="token-input-row">
+                <input
+                  type="password"
+                  placeholder="ghp_xxxxxxxxxxxx"
+                  value={githubToken}
+                  onChange={(e) => handleGithubTokenChange(e.target.value)}
+                  className="token-input"
+                  disabled={isScanning}
+                />
+                {githubToken && (
+                  <button className="token-clear-btn" title="Clear token" onClick={() => handleGithubTokenChange('')}>✕</button>
+                )}
+              </div>
+              <span className="config-hint">
+                Create at <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer">github.com/settings/tokens</a>
+              </span>
+            </div>
+          )}
+
+          {/* GitLab Token — shown when GitLab selected */}
+          {needsGitlabToken && (
+            <div className="config-section">
+              <label className="config-label">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                </svg>
+                GitLab Token
+              </label>
+              <div className="token-input-row">
+                <input
+                  type="password"
+                  placeholder="glpat-xxxxxxxxxxxx"
+                  value={gitlabToken}
+                  onChange={(e) => handleGitlabTokenChange(e.target.value)}
+                  className="token-input"
+                  disabled={isScanning}
+                />
+                {gitlabToken && (
+                  <button className="token-clear-btn" title="Clear token" onClick={() => handleGitlabTokenChange('')}>✕</button>
+                )}
+              </div>
+              <span className="config-hint">
+                Create at <a href="https://gitlab.com/-/user_settings/personal_access_tokens" target="_blank" rel="noreferrer">gitlab.com/settings/tokens</a> with <code>read_api</code> scope
+              </span>
+            </div>
+          )}
 
           {/* Time Range */}
           <div className="config-section">
@@ -349,7 +471,7 @@ export function Scanner() {
           {/* Scan Controls */}
           <div className="scan-controls">
             {!isScanning ? (
-              <button className="btn-scan" onClick={startScan} disabled={selectedProviders.length === 0 || !githubToken.trim()}>
+              <button className="btn-scan" onClick={startScan} disabled={!canStartScan}>
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <circle cx="11" cy="11" r="8" />
                   <path d="m21 21-4.3-4.3" />
@@ -429,20 +551,35 @@ export function Scanner() {
             </div>
           )}
 
-          {/* Filter Tabs */}
+          {/* Filter Tabs — by provider */}
           {results.length > 0 && (
-            <div className="filter-tabs">
-              <button className={`filter-tab ${filterProvider === 'all' ? 'active' : ''}`} onClick={() => setFilterProvider('all')}>
-                All ({results.length})
-              </button>
-              {Object.entries(statsByProvider).map(([provider, count]) => {
-                const pp = PROVIDER_PATTERNS.find(p => p.provider === provider)
-                return (
-                  <button key={provider} className={`filter-tab ${filterProvider === provider ? 'active' : ''}`} onClick={() => setFilterProvider(provider)}>
-                    {pp?.icon} {pp?.label} ({count})
+            <div className="filter-tabs-group">
+              <div className="filter-tabs">
+                <button className={`filter-tab ${filterProvider === 'all' ? 'active' : ''}`} onClick={() => setFilterProvider('all')}>
+                  All ({results.length})
+                </button>
+                {Object.entries(statsByProvider).map(([provider, count]) => {
+                  const pp = PROVIDER_PATTERNS.find(p => p.provider === provider)
+                  return (
+                    <button key={provider} className={`filter-tab ${filterProvider === provider ? 'active' : ''}`} onClick={() => setFilterProvider(provider)}>
+                      {pp?.icon} {pp?.label} ({count})
+                    </button>
+                  )
+                })}
+              </div>
+              {/* Filter by source */}
+              {Object.keys(statsBySource).length > 1 && (
+                <div className="filter-tabs source-filter-tabs">
+                  <button className={`filter-tab filter-tab-source ${filterSource === 'all' ? 'active' : ''}`} onClick={() => setFilterSource('all')}>
+                    🌐 All Sources
                   </button>
-                )
-              })}
+                  {Object.entries(statsBySource).map(([source, count]) => (
+                    <button key={source} className={`filter-tab filter-tab-source ${filterSource === source ? 'active' : ''}`} onClick={() => setFilterSource(source)}>
+                      {sourceLabel(source)} ({count})
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -477,15 +614,13 @@ export function Scanner() {
                     </div>
                     <div className="leak-meta">
                       <span className="leak-meta-label">Source:</span>
-                      <span className={`source-badge source-${r.source}`}>
-                        {r.source === 'code' && '📄 Code'}
-                        {r.source === 'gist' && '📋 Gist'}
-                        {r.source === 'commit' && '📝 Commit'}
+                      <span className={`source-badge source-${r.source.replace('.', '')}`}>
+                        {sourceLabel(r.source)}
                       </span>
                     </div>
                   </div>
                   <div className="leak-card-footer">
-                    <a href={r.fileUrl} target="_blank" rel="noreferrer" className="leak-source-btn">View on GitHub ↗</a>
+                    <a href={r.fileUrl} target="_blank" rel="noreferrer" className="leak-source-btn">View Source ↗</a>
                     <div className="card-actions">
                       {r.keyStatus === 'valid' && (
                         <button className="btn-use-key" onClick={() => useKeyInChat(r.key, r.provider)} title="Use this key in Chat">
@@ -518,7 +653,7 @@ export function Scanner() {
                 </svg>
               </div>
               <h3>Ready to Scan</h3>
-              <p>Enter your GitHub token, select providers, and start scanning to find exposed API keys in public repositories.</p>
+              <p>Select your search sources and providers, then start scanning to find exposed API keys across multiple platforms.</p>
             </div>
           )}
 
@@ -526,7 +661,7 @@ export function Scanner() {
           {isScanning && results.length === 0 && (
             <div className="empty-state">
               <div className="scanning-spinner" />
-              <h3>Scanning GitHub...</h3>
+              <h3>Scanning...</h3>
               <p>{progress.message}</p>
             </div>
           )}

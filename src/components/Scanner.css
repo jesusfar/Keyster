@@ -810,6 +810,121 @@
   background: rgba(251, 146, 60, 0.1);
 }
 
+.source-gitlab {
+  color: #fc6d26;
+  background: rgba(252, 109, 38, 0.1);
+}
+
+.source-sourcegraph {
+  color: #a112ff;
+  background: rgba(161, 18, 255, 0.1);
+}
+
+.source-grepapp {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.1);
+}
+
+/* ─── Source Selector Grid ────────────────────────────────────────────────── */
+
+.source-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.source-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  font-size: 0.78rem;
+  user-select: none;
+  position: relative;
+}
+
+.source-chip input[type="checkbox"] {
+  display: none;
+}
+
+.source-chip:hover {
+  border-color: var(--border-light);
+  background: var(--bg-elevated);
+}
+
+.source-chip.active {
+  border-color: var(--accent-color);
+  background: rgba(0, 255, 157, 0.08);
+  box-shadow: 0 0 10px rgba(0, 255, 157, 0.1);
+}
+
+.source-chip-github.active {
+  border-color: #8b8b8b;
+  background: rgba(139, 139, 139, 0.08);
+  box-shadow: 0 0 10px rgba(139, 139, 139, 0.1);
+}
+
+.source-chip-gitlab.active {
+  border-color: #fc6d26;
+  background: rgba(252, 109, 38, 0.08);
+  box-shadow: 0 0 10px rgba(252, 109, 38, 0.1);
+}
+
+.source-chip-sourcegraph.active {
+  border-color: #a112ff;
+  background: rgba(161, 18, 255, 0.08);
+  box-shadow: 0 0 10px rgba(161, 18, 255, 0.1);
+}
+
+.source-chip-grepapp.active {
+  border-color: #38bdf8;
+  background: rgba(56, 189, 248, 0.08);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.1);
+}
+
+.chip-free {
+  font-size: 0.55rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  background: rgba(52, 211, 153, 0.15);
+  color: #34d399;
+  line-height: 1;
+}
+
+/* ─── Filter Tabs Group ───────────────────────────────────────────────────── */
+
+.filter-tabs-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  animation: fadeIn 0.3s ease-out;
+}
+
+.source-filter-tabs {
+  gap: 0.25rem;
+}
+
+.filter-tab-source {
+  font-size: 0.7rem;
+  padding: 0.3rem 0.7rem;
+  border-style: dashed;
+}
+
+.filter-tab-source.active {
+  border-style: solid;
+  background: rgba(56, 189, 248, 0.1);
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
 .leak-card-footer {
   display: flex;
   justify-content: space-between;
