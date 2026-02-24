@@ -1,8 +1,11 @@
-import { useState } from 'react'
+import { useState, lazy, Suspense } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { ChatWindow } from './components/ChatWindow'
-import { Scanner } from './components/Scanner'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import type { Provider } from './lib/api'
+
+// Lazy load Scanner for better initial load performance
+const Scanner = lazy(() => import('./components/Scanner').then(module => ({ default: module.Scanner })))
 
 export interface ChatSession {
   provider: Provider
@@ -17,7 +20,8 @@ function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('chat')
 
   return (
-    <div className="app-container" style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh' }}>
+    <ErrorBoundary>
+      <div className="app-container" style={{ display: 'flex', flexDirection: 'column', width: '100vw', height: '100vh' }}>
       {/* Tab Navigation */}
       <nav className="app-tabs">
         <div className="app-brand">
@@ -58,9 +62,23 @@ function App() {
           <ChatWindow session={session} />
         </div>
       ) : (
-        <Scanner />
+        <Suspense fallback={
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flex: 1,
+            fontSize: '1.2rem',
+            color: '#888'
+          }}>
+            Loading Scanner...
+          </div>
+        }>
+          <Scanner />
+        </Suspense>
       )}
-    </div>
+      </div>
+    </ErrorBoundary>
   )
 }
 

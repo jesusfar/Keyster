@@ -82,6 +82,8 @@ const SOURCE_OPTIONS: { id: ScanSourcePlatform; label: string; icon: string; nee
   { id: 'gitlab',      label: 'GitLab',      icon: '🦊', needsToken: true,  tokenLabel: 'GitLab PAT' },
   { id: 'sourcegraph', label: 'Sourcegraph', icon: '🔭', needsToken: false },
   { id: 'grep.app',    label: 'grep.app',    icon: '🔎', needsToken: false },
+  { id: 'apiradar',    label: 'API Radar',   icon: '📡', needsToken: false },
+  { id: 'huggingface', label: 'HuggingFace', icon: '🤗', needsToken: false },
 ]
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -103,6 +105,7 @@ export function Scanner() {
   const [filterProvider, setFilterProvider] = useState<string>('all')
   const [filterSource, setFilterSource] = useState<string>('all')
   const [timeRange, setTimeRange] = useState<TimeRange>('7d')
+  const [deepScan, setDeepScan] = useState(false)
   const [soundEnabled, setSoundEnabled] = useState(true)
   const [continuousMode, setContinuousMode] = useState(false)
   const [scanCycle, setScanCycle] = useState(0)
@@ -167,7 +170,7 @@ export function Scanner() {
 
   const needsGithubToken = selectedSources.includes('github')
   const needsGitlabToken = selectedSources.includes('gitlab')
-  const hasAnyFreeSource = selectedSources.some(s => s === 'sourcegraph' || s === 'grep.app')
+  const hasAnyFreeSource = selectedSources.some(s => s === 'sourcegraph' || s === 'grep.app' || s === 'apiradar')
   const canStartScan = selectedProviders.length > 0 
     && selectedSources.length > 0
     && (hasAnyFreeSource || (needsGithubToken && githubToken.trim()) || (needsGitlabToken && gitlabToken.trim()))
@@ -182,7 +185,8 @@ export function Scanner() {
         gitlabToken: gitlabToken.trim() || undefined,
         sources: selectedSources,
         timeRange,
-        maxPagesPerQuery: 3,
+        maxPagesPerQuery: deepScan ? 10 : 3,
+        deepScan: deepScan,
         onProgress: (p) => setProgress(p),
         onResult: (r) => setResults(prev => {
           // Deduplicate across cycles
@@ -251,7 +255,7 @@ export function Scanner() {
     showToast('Key copied to clipboard', 'success')
   }
 
-  const useKeyInChat = (key: string, provider: string) => {
+  const applyKeyToChat = (key: string, provider: string) => {
     // Save the key to localStorage so the Chat sidebar picks it up
     localStorage.setItem(`apiKey_${provider}`, key)
     showToast(`Key saved for ${provider} — switch to Chat tab to use it!`, 'success')
@@ -294,12 +298,14 @@ export function Scanner() {
 
   const sourceLabel = (source: string) => {
     switch (source) {
-      case 'code': return '📄 GitHub Code'
-      case 'gist': return '📋 Gist'
-      case 'commit': return '📝 Commit'
+      case 'code': return '🐙 GitHub Code'
+      case 'gist': return '📋 GitHub Gist'
+      case 'commit': return '📝 GitHub Commit'
+      case 'issue': return '💬 GitHub Issue'
       case 'gitlab': return '🦊 GitLab'
       case 'sourcegraph': return '🔭 Sourcegraph'
       case 'grep.app': return '🔎 grep.app'
+      case 'apiradar': return '📡 API Radar'
       default: return source
     }
   }
@@ -362,12 +368,12 @@ export function Scanner() {
                   <rect width="18" height="11" x="3" y="11" rx="2" ry="2" />
                   <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                 </svg>
-                GitHub Token
+                GitHub Token(s)
               </label>
               <div className="token-input-row">
                 <input
                   type="password"
-                  placeholder="ghp_xxxxxxxxxxxx"
+                  placeholder="ghp_xxxx, ghp_yyyy..."
                   value={githubToken}
                   onChange={(e) => handleGithubTokenChange(e.target.value)}
                   className="token-input"
@@ -378,7 +384,7 @@ export function Scanner() {
                 )}
               </div>
               <span className="config-hint">
-                Create at <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer">github.com/settings/tokens</a>
+                Create at <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer">github.com/settings/tokens</a> (Separate multiple tokens with commas)
               </span>
             </div>
           )}
@@ -428,6 +434,28 @@ export function Scanner() {
               <option value="30d">Last 30 days</option>
               <option value="all">All time</option>
             </select>
+          </div>
+
+          {/* Settings / Deep Scan */}
+          <div className="config-section">
+            <label className="config-label">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+              Scan Modes
+            </label>
+            <div className="settings-controls">
+              <label className="toggle-label" title="Scans more pages and expands query patterns across providers">
+                <input 
+                  type="checkbox" 
+                  checked={deepScan} 
+                  onChange={(e) => setDeepScan(e.target.checked)} 
+                  disabled={isScanning} 
+                />
+                Deep Scan Mode
+              </label>
+            </div>
           </div>
 
           {/* Provider Selection */}
@@ -623,7 +651,7 @@ export function Scanner() {
                     <a href={r.fileUrl} target="_blank" rel="noreferrer" className="leak-source-btn">View Source ↗</a>
                     <div className="card-actions">
                       {r.keyStatus === 'valid' && (
-                        <button className="btn-use-key" onClick={() => useKeyInChat(r.key, r.provider)} title="Use this key in Chat">
+                        <button className="btn-use-key" onClick={() => applyKeyToChat(r.key, r.provider)} title="Use this key in Chat">
                           ⚡ Use
                         </button>
                       )}

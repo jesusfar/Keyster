@@ -57,9 +57,9 @@ export function Sidebar({ onSessionConfigured }: SidebarProps) {
       if (sortedModels.length > 0) {
         onSessionConfigured(provider, apiKey, sortedModels[0].id)
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setIsConnected(false)
-      showToast(err.message || 'Failed to connect', 'error')
+      showToast((err as Error).message || 'Failed to connect', 'error')
       clearApiKey(provider)
     } finally {
       setIsLoading(false)

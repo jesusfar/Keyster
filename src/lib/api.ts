@@ -65,35 +65,35 @@ export async function validateAndFetchModels(provider: Provider, apiKey: string)
   // Different providers return models differently
   if (provider === 'google') {
     // Google returns { models: [{ name: "models/gemini-pro", displayName: "..." }] }
-    return (data.models || []).map((m: any) => ({
+    return (data.models || []).map((m: { name?: string, displayName?: string }) => ({
       id: m.name?.replace('models/', '') || m.name,
       name: m.displayName || m.name,
     }))
   }
 
   if (provider === 'openrouter') {
-    return (data.data || []).map((m: any) => ({
+    return (data.data || []).map((m: { id: string, name?: string }) => ({
       id: m.id,
       name: m.name || m.id,
     }))
   }
 
   if (provider === 'anthropic') {
-    return (data.data || []).map((m: any) => ({
+    return (data.data || []).map((m: { id: string, display_name?: string }) => ({
       id: m.id,
       name: m.display_name || m.id,
     }))
   }
 
   if (provider === 'cohere') {
-    return (data.models || []).map((m: any) => ({
+    return (data.models || []).map((m: { id: string, name?: string }) => ({
       id: m.name || m.id,
       name: m.name || m.id,
     }))
   }
 
   // OpenAI-compatible format (most providers)
-  return (data.data || data.models || []).map((m: any) => ({
+  return (data.data || data.models || []).map((m: { id: string }) => ({
     id: m.id,
     name: m.id,
   }))
@@ -167,7 +167,7 @@ async function sendAnthropicChat(
   const systemMsg = messages.find(m => m.role === 'system')
   const chatMsgs = messages.filter(m => m.role !== 'system')
 
-  const body: any = {
+  const body: Record<string, unknown> = {
     model,
     max_tokens: 4096,
     messages: chatMsgs.map(m => ({
@@ -205,12 +205,12 @@ async function sendGoogleChat(
   const systemMsg = messages.find(m => m.role === 'system')
   const chatMsgs = messages.filter(m => m.role !== 'system')
 
-  const body: any = {
+  const body: Record<string, unknown> = {
     contents: chatMsgs.map(m => ({
       role: m.role === 'assistant' ? 'model' : 'user',
       parts: typeof m.content === 'string'
         ? [{ text: m.content }]
-        : m.content.map((p: any) => {
+        : m.content.map((p: { type: string, text?: string, image_url?: { url: string } }) => {
             if (p.type === 'text') return { text: p.text }
             if (p.type === 'image_url') {
               const url = p.image_url.url
@@ -259,7 +259,7 @@ async function sendCohereChat(
       message: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
     }))
 
-  const body: any = {
+  const body: Record<string, unknown> = {
     model,
     message: typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : JSON.stringify(lastUserMsg?.content),
     chat_history: chatHistory,

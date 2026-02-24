@@ -4,6 +4,7 @@ import { ChatBubble } from './ChatBubble'
 import { sendChatMessage } from '../lib/api'
 import type { Message } from '../lib/api'
 import { useToast } from './ToastContext'
+import { getErrorMessage } from '../lib/utils/errorHandlers'
 import './ChatWindow.css'
 
 interface ChatWindowProps {
@@ -43,7 +44,7 @@ export function ChatWindow({ session }: ChatWindowProps) {
     let messageContent: Message['content'] = userText
     
     if (attachedImages.length > 0) {
-      const parts: any[] = attachedImages.map(img => ({ type: 'image_url', image_url: { url: img } }))
+      const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = attachedImages.map(img => ({ type: 'image_url', image_url: { url: img } }))
       if (userText) {
         parts.push({ type: 'text', text: userText })
       }
@@ -72,11 +73,12 @@ export function ChatWindow({ session }: ChatWindowProps) {
         ...newMessages,
         { role: 'assistant', content: response }
       ])
-    } catch (err: any) {
-      showToast(err.message || 'Failed to send message', 'error')
+    } catch (err: unknown) {
+      const errorMessage = getErrorMessage(err)
+      showToast(errorMessage, 'error')
       setMessages([
         ...newMessages,
-        { role: 'error', content: err.message || 'Failed to send message' } as any
+        { role: 'error', content: errorMessage } as unknown as Message
       ])
     } finally {
       setIsLoading(false)
@@ -136,7 +138,7 @@ export function ChatWindow({ session }: ChatWindowProps) {
           messages.map((msg, idx) => (
             <ChatBubble 
               key={idx} 
-              role={msg.role as any} 
+              role={msg.role as "user" | "assistant" | "system" | "error"} 
               content={msg.content} 
               modelName={msg.role === 'assistant' ? session?.model : undefined} 
             />
@@ -160,10 +162,12 @@ export function ChatWindow({ session }: ChatWindowProps) {
           <div className="attached-images-preview">
             {attachedImages.map((img, i) => (
               <div key={i} className="image-preview-item">
-                <img src={img} alt="preview" />
-                <button 
+                <img src={img} alt={`Preview ${i + 1}`} />
+                <button
+                  type="button"
                   className="image-remove-btn"
                   onClick={() => setAttachedImages(prev => prev.filter((_, idx) => idx !== i))}
+                  aria-label="Remove image"
                 >
                   ✕
                 </button>
@@ -180,13 +184,15 @@ export function ChatWindow({ session }: ChatWindowProps) {
             multiple 
             accept="image/*,.txt,.md,.json,.csv" 
           />
-          <button 
-            className="attach-btn" 
+          <button
+            type="button"
+            className="attach-btn"
             title="Attach file or image"
+            aria-label="Attach file or image"
             onClick={() => fileInputRef.current?.click()}
             disabled={!session || isLoading}
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
             </svg>
           </button>
@@ -201,12 +207,15 @@ export function ChatWindow({ session }: ChatWindowProps) {
             onKeyDown={handleKeyDown}
           />
           
-          <button 
-            className="send-btn" 
+          <button
+            type="button"
+            className="send-btn"
+            title="Send message"
+            aria-label="Send message"
             disabled={!session || (!input.trim() && attachedImages.length === 0) || isLoading}
             onClick={handleSend}
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <line x1="22" y1="2" x2="11" y2="13" />
               <polygon points="22 2 15 22 11 13 2 9 22 2" />
             </svg>

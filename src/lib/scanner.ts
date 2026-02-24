@@ -13,8 +13,8 @@ export interface ProviderPattern {
 }
 
 export type KeyStatus = 'checking' | 'valid' | 'invalid' | 'rate_limited' | 'error'
-export type SearchSource = 'code' | 'gist' | 'commit' | 'gitlab' | 'sourcegraph' | 'grep.app'
-export type ScanSourcePlatform = 'github' | 'gitlab' | 'sourcegraph' | 'grep.app'
+export type SearchSource = 'code' | 'gist' | 'commit' | 'issue' | 'gitlab' | 'sourcegraph' | 'grep.app' | 'apiradar'
+export type ScanSourcePlatform = 'github' | 'gitlab' | 'sourcegraph' | 'grep.app' | 'apiradar' | 'huggingface'
 
 export interface ScanResult {
   key: string
@@ -48,8 +48,8 @@ export const PROVIDER_PATTERNS: ProviderPattern[] = [
     label: 'Anthropic',
     icon: '🟣',
     patterns: [
-      /sk-ant-api03-[A-Za-z0-9_\-]{80,}/g,
-      /sk-ant-[A-Za-z0-9_\-]{40,}/g,
+      /sk-ant-api03-[A-Za-z0-9_-]{80,}/g,
+      /sk-ant-[A-Za-z0-9_-]{40,}/g,
     ],
     searchQueries: [
       'sk-ant-api03',
@@ -76,7 +76,7 @@ export const PROVIDER_PATTERNS: ProviderPattern[] = [
     label: 'OpenAI',
     icon: '🟢',
     patterns: [
-      /sk-proj-[A-Za-z0-9_\-]{40,}/g,
+      /sk-proj-[A-Za-z0-9_-]{40,}/g,
       /sk-[a-zA-Z0-9]{20,}/g,
     ],
     searchQueries: [
@@ -103,7 +103,7 @@ export const PROVIDER_PATTERNS: ProviderPattern[] = [
     label: 'Google AI',
     icon: '🔵',
     patterns: [
-      /AIza[A-Za-z0-9_\-]{35}/g,
+      /AIza[A-Za-z0-9_-]{35}/g,
     ],
     searchQueries: [
       'GEMINI_API_KEY AIza',
@@ -308,9 +308,11 @@ export const PROVIDER_PATTERNS: ProviderPattern[] = [
 
 // ─── Provider API Endpoints (for key validation) ────────────────────────────
 
-const VALIDATION_ENDPOINTS: Record<string, { url: string, headers: (key: string) => Record<string, string> }> = {
+const VALIDATION_ENDPOINTS: Record<string, { url: string, method?: string, body?: unknown, headers: (key: string) => Record<string, string> }> = {
   anthropic: {
-    url: '/api/anthropic/models',
+    url: '/api/anthropic/messages',
+    method: 'POST',
+    body: { model: 'claude-3-haiku-20240307', max_tokens: 1, messages: [{role: 'user', content: 'hi'}] },
     headers: (key) => ({ 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }),
   },
   openai: {
@@ -352,9 +354,16 @@ export async function validateKey(key: string, provider: string): Promise<KeySta
       ? `${endpoint.url}?key=${key}`
       : endpoint.url
 
-    const response = await fetch(url, {
+    const fetchOptions: RequestInit = {
+      method: endpoint.method || 'GET',
       headers: endpoint.headers(key),
-    })
+    }
+
+    if (endpoint.body) {
+      fetchOptions.body = JSON.stringify(endpoint.body)
+    }
+
+    const response = await fetch(url, fetchOptions)
 
     if (response.ok) return 'valid'
     if (response.status === 401 || response.status === 403) return 'invalid'
@@ -403,7 +412,7 @@ interface GitHubSearchItem {
  */
 async function searchGitHubAPI(
   query: string,
-  token: string,
+  tokens: string[],
   page: number = 1,
   retries: number = 3
 ): Promise<GitHubSearchResponse> {
@@ -411,13 +420,18 @@ async function searchGitHubAPI(
     q: query,
     per_page: '30',
     page: String(page),
+    sort: 'indexed',
+    order: 'desc',
   })
+  
+  let tokenIndex = 0
 
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
+      const activeToken = tokens[tokenIndex % tokens.length]
       const response = await fetch(`${GITHUB_API}/search/code?${params}`, {
         headers: {
-          'Authorization': `Bearer ${token}`,
+          'Authorization': `Bearer ${activeToken}`,
           'Accept': 'application/vnd.github.text-match+json',
           'X-GitHub-Api-Version': '2022-11-28',
         },
@@ -425,12 +439,14 @@ async function searchGitHubAPI(
 
       // Track rate limits from headers
       const remaining = response.headers.get('X-RateLimit-Remaining')
-      if (remaining) {
+      if (remaining && tokens.length === 1) {
         rateLimitRemaining = parseInt(remaining, 10)
-        // Adaptively slow down when approaching limits
+        // Adaptively slow down when approaching limits (only if 1 token)
         if (rateLimitRemaining < 5) currentDelayMs = 10000
         else if (rateLimitRemaining < 10) currentDelayMs = 6000
         else currentDelayMs = BASE_DELAY_MS
+      } else {
+         currentDelayMs = BASE_DELAY_MS // Reset if we have multiple tokens
       }
 
       if (response.status === 429 || response.status === 403) {
@@ -438,7 +454,14 @@ async function searchGitHubAPI(
         const retryAfter = resetHeader
           ? Math.max(0, Number(resetHeader) - Math.floor(Date.now() / 1000))
           : 60
-        throw new RateLimitError(retryAfter)
+          
+        if (tokens.length > 1) {
+           // Rotate token and retry immediately
+           tokenIndex++
+           continue
+        } else {
+           throw new RateLimitError(retryAfter)
+        }
       }
 
       if (response.status === 401) throw new Error('AUTH_ERROR')
@@ -449,8 +472,8 @@ async function searchGitHubAPI(
       }
 
       return await response.json()
-    } catch (err: any) {
-      if (err.message === 'AUTH_ERROR' || err instanceof RateLimitError) throw err
+    } catch (err: unknown) {
+      if ((err as Error).message === 'AUTH_ERROR' || err instanceof RateLimitError) throw err
       // Retry with exponential backoff
       if (attempt < retries - 1) {
         await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)))
@@ -515,7 +538,27 @@ function extractKeysFromText(text: string, patterns: RegExp[]): string[] {
 }
 
 /**
- * Heuristic: skip obviously fake/example keys
+ * Calculate Shannon Entropy of a string to detect cryptographically random keys
+ * vs repeating characters (e.g. sk-xxxxxxxxxxxxxxxx)
+ */
+function calculateEntropy(str: string): number {
+  const len = str.length
+  if (len === 0) return 0
+  
+  const frequencies: Record<string, number> = {}
+  for (let i = 0; i < len; i++) {
+    const char = str[i]
+    frequencies[char] = (frequencies[char] || 0) + 1
+  }
+  
+  return Object.values(frequencies).reduce((entropy, count) => {
+    const p = count / len
+    return entropy - p * Math.log2(p)
+  }, 0)
+}
+
+/**
+ * Heuristic: skip obviously fake/example keys and low-entropy strings
  */
 function isFakeKey(key: string): boolean {
   const lower = key.toLowerCase()
@@ -524,9 +567,16 @@ function isFakeKey(key: string): boolean {
     'test', 'example', 'demo', 'fake', 'placeholder', 'your_',
     'insert', 'replace', 'abcdef', '123456', 'sample', 'dummy',
     'todo', 'fixme', 'changeme', 'secret', 'mykey', 'my_key',
-    'put_your', 'enter_your', 'add_your', 'your-api',
+    'put_your', 'enter_your', 'add_your', 'your-api', 'key_here'
   ]
-  return fakePatterns.some(p => lower.includes(p))
+  if (fakePatterns.some(p => lower.includes(p))) return true
+  
+  // Calculate entropy of the key part (ignoring prefixes like sk-ant-)
+  // If entropy is below 3.5, it's highly likely to be a fake repetitive string
+  const entropy = calculateEntropy(key)
+  if (entropy < 3.5 && key.length > 20) return true
+  
+  return false
 }
 
 /**
@@ -534,35 +584,60 @@ function isFakeKey(key: string): boolean {
  */
 async function searchGitHubGists(
   query: string,
-  token: string,
+  tokens: string[],
   page: number = 1
 ): Promise<GitHubSearchResponse> {
   const params = new URLSearchParams({
     q: query,
     per_page: '30',
     page: String(page),
+    sort: 'indexed',
+    order: 'desc',
   })
 
-  const response = await fetch(`${GITHUB_API}/search/code?${params}`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github.text-match+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  })
+  let tokenIndex = 0
+  const retries = 3
 
-  if (response.status === 429 || response.status === 403) {
-    const resetHeader = response.headers.get('X-RateLimit-Reset')
-    const retryAfter = resetHeader
-      ? Math.max(0, Number(resetHeader) - Math.floor(Date.now() / 1000))
-      : 60
-    throw new RateLimitError(retryAfter)
+  for (let attempt = 0; attempt < retries; attempt++) {
+     try {
+        const activeToken = tokens[tokenIndex % tokens.length]
+        const response = await fetch(`${GITHUB_API}/search/code?${params}`, {
+          headers: {
+            'Authorization': `Bearer ${activeToken}`,
+            'Accept': 'application/vnd.github.text-match+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        })
+
+        if (response.status === 429 || response.status === 403) {
+          const resetHeader = response.headers.get('X-RateLimit-Reset')
+          const retryAfter = resetHeader
+            ? Math.max(0, Number(resetHeader) - Math.floor(Date.now() / 1000))
+            : 60
+            
+          if (tokens.length > 1) {
+             tokenIndex++
+             continue
+          } else {
+             throw new RateLimitError(retryAfter)
+          }
+        }
+        
+        if (response.status === 401) throw new Error('AUTH_ERROR')
+        if (response.status === 422) return { total_count: 0, incomplete_results: false, items: [] }
+        if (!response.ok) return { total_count: 0, incomplete_results: false, items: [] }
+
+        return await response.json()
+     } catch (err: unknown) {
+        if ((err as Error).message === 'AUTH_ERROR' || err instanceof RateLimitError) throw err
+        if (attempt < retries - 1) {
+           await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)))
+           continue
+        }
+        return { total_count: 0, incomplete_results: false, items: [] }
+     }
   }
-  if (response.status === 401) throw new Error('AUTH_ERROR')
-  if (response.status === 422) return { total_count: 0, incomplete_results: false, items: [] }
-  if (!response.ok) return { total_count: 0, incomplete_results: false, items: [] }
-
-  return await response.json()
+  return { total_count: 0, incomplete_results: false, items: [] }
 }
 
 /**
@@ -590,7 +665,7 @@ interface CommitSearchResponse {
 
 async function searchGitHubCommits(
   query: string,
-  token: string,
+  tokens: string[],
   page: number = 1
 ): Promise<CommitSearchResponse> {
   const params = new URLSearchParams({
@@ -601,25 +676,123 @@ async function searchGitHubCommits(
     order: 'desc',
   })
 
-  const response = await fetch(`${GITHUB_API}/search/commits?${params}`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github.text-match+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
+  let tokenIndex = 0
+  const retries = 3
+
+  for (let attempt = 0; attempt < retries; attempt++) {
+     try {
+        const activeToken = tokens[tokenIndex % tokens.length]
+        const response = await fetch(`${GITHUB_API}/search/commits?${params}`, {
+          headers: {
+            'Authorization': `Bearer ${activeToken}`,
+            'Accept': 'application/vnd.github.text-match+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        })
+
+        if (response.status === 429 || response.status === 403) {
+          const resetHeader = response.headers.get('X-RateLimit-Reset')
+          const retryAfter = resetHeader
+            ? Math.max(0, Number(resetHeader) - Math.floor(Date.now() / 1000))
+            : 60
+            
+          if (tokens.length > 1) {
+             tokenIndex++
+             continue
+          } else {
+             throw new RateLimitError(retryAfter)
+          }
+        }
+        
+        if (response.status === 401) throw new Error('AUTH_ERROR')
+        if (!response.ok) return { total_count: 0, items: [] }
+
+        return await response.json()
+     } catch (err: unknown) {
+        if ((err as Error).message === 'AUTH_ERROR' || err instanceof RateLimitError) throw err
+        if (attempt < retries - 1) {
+           await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)))
+           continue
+        }
+        return { total_count: 0, items: [] }
+     }
+  }
+  return { total_count: 0, items: [] }
+}
+
+/**
+ * Search GitHub Issues / Pull Requests via REST API
+ */
+interface IssueSearchResponse {
+  total_count: number
+  items: Array<{
+    html_url: string
+    body: string
+    title: string
+    repository_url: string
+    user: { login: string }
+    text_matches?: Array<{
+      fragment: string
+      matches: Array<{ text: string; indices: [number, number] }>
+    }>
+  }>
+}
+
+async function searchGitHubIssues(
+  query: string,
+  tokens: string[],
+  page: number = 1
+): Promise<IssueSearchResponse> {
+  const params = new URLSearchParams({
+    q: query,
+    per_page: '20',
+    page: String(page),
+    sort: 'updated',
+    order: 'desc',
   })
 
-  if (response.status === 429 || response.status === 403) {
-    const resetHeader = response.headers.get('X-RateLimit-Reset')
-    const retryAfter = resetHeader
-      ? Math.max(0, Number(resetHeader) - Math.floor(Date.now() / 1000))
-      : 60
-    throw new RateLimitError(retryAfter)
-  }
-  if (response.status === 401) throw new Error('AUTH_ERROR')
-  if (!response.ok) return { total_count: 0, items: [] }
+  let tokenIndex = 0
+  const retries = 3
 
-  return await response.json()
+  for (let attempt = 0; attempt < retries; attempt++) {
+     try {
+        const activeToken = tokens[tokenIndex % tokens.length]
+        const response = await fetch(`${GITHUB_API}/search/issues?${params}`, {
+          headers: {
+            'Authorization': `Bearer ${activeToken}`,
+            'Accept': 'application/vnd.github.text-match+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+          },
+        })
+
+        if (response.status === 429 || response.status === 403) {
+          const resetHeader = response.headers.get('X-RateLimit-Reset')
+          const retryAfter = resetHeader
+            ? Math.max(0, Number(resetHeader) - Math.floor(Date.now() / 1000))
+            : 60
+            
+          if (tokens.length > 1) {
+             tokenIndex++
+             continue
+          } else {
+             throw new RateLimitError(retryAfter)
+          }
+        }
+        
+        if (response.status === 401) throw new Error('AUTH_ERROR')
+        if (!response.ok) return { total_count: 0, items: [] }
+
+        return await response.json()
+     } catch (err: unknown) {
+        if ((err as Error).message === 'AUTH_ERROR' || err instanceof RateLimitError) throw err
+        if (attempt < retries - 1) {
+           await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)))
+           continue
+        }
+        return { total_count: 0, items: [] }
+     }
+  }
+  return { total_count: 0, items: [] }
 }
 
 // ─── Scan Orchestration ──────────────────────────────────────────────────────
@@ -631,6 +804,7 @@ interface ScanOptions {
   sources?: ScanSourcePlatform[]
   timeRange: TimeRange
   maxPagesPerQuery?: number
+  deepScan?: boolean
   onProgress: (progress: ScanProgress) => void
   onResult: (result: ScanResult) => void
   onResultUpdate: (key: string, status: KeyStatus) => void
@@ -714,14 +888,16 @@ const SOURCEGRAPH_API = '/api/sourcegraph'
 
 async function searchSourcegraph(
   query: string,
+  deepScan: boolean = false,
   signal?: AbortSignal
 ): Promise<Array<{ repo: string; filePath: string; fileUrl: string; content: string }>> {
   const results: Array<{ repo: string; filePath: string; fileUrl: string; content: string }> = []
 
   try {
+    const count = deepScan ? 200 : 50
     const params = new URLSearchParams({
-      q: `${query} count:50 patterntype:literal`,
-      display: '50',
+      q: `${query} count:${count} patterntype:literal`,
+      display: String(count),
     })
 
     const response = await fetch(`${SOURCEGRAPH_API}/search/stream?${params}`, {
@@ -746,9 +922,9 @@ async function searchSourcegraph(
               const path = match.path || match.name || ''
               let content = ''
               if (match.lineMatches) {
-                content = match.lineMatches.map((lm: any) => lm.preview || '').join('\n')
+                content = match.lineMatches.map((lm: { preview?: string }) => lm.preview || '').join('\n')
               } else if (match.chunkMatches) {
-                content = match.chunkMatches.map((cm: any) => cm.content || '').join('\n')
+                content = match.chunkMatches.map((cm: { content?: string }) => cm.content || '').join('\n')
               }
               results.push({
                 repo: repoName,
@@ -816,8 +992,8 @@ async function searchGitLabBlobs(
     if (!response.ok) return []
 
     return await response.json()
-  } catch (err: any) {
-    if (err.message === 'AUTH_ERROR' || err instanceof RateLimitError) throw err
+  } catch (err: unknown) {
+    if ((err as Error).message === 'AUTH_ERROR' || err instanceof RateLimitError) throw err
     return []
   }
 }
@@ -880,13 +1056,37 @@ async function searchGrepApp(
   }
 }
 
+// ─── API Radar Search (free, no auth) ──────────────────────────────────────
+
+const APIRADAR_API = '/api/apiradar'
+
+interface ApiRadarLeak {
+  id: string
+  provider: string
+  redactedKey: string
+  repoUrl: string
+  filePath: string
+  leakIntroducedAt: string
+}
+
+async function fetchApiRadarLeaks(signal?: AbortSignal): Promise<ApiRadarLeak[]> {
+  try {
+    const res = await fetch(`${APIRADAR_API}/leaks`, { signal })
+    if (!res.ok) return []
+    const data = await res.json()
+    return data.leaks || []
+  } catch {
+    return []
+  }
+}
+
 // ─── Main Scan Orchestrator ──────────────────────────────────────────────────
 
 export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
   const {
     providers, githubToken, gitlabToken,
     sources = ['github'],
-    timeRange, maxPagesPerQuery = 3,
+    timeRange, maxPagesPerQuery = 3, deepScan = false,
     onProgress, onResult, onResultUpdate, signal,
   } = options
 
@@ -894,6 +1094,7 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
   const seenKeys = new Set<string>()
   const selectedPatterns = PROVIDER_PATTERNS.filter(p => providers.includes(p.provider))
   const dateFilter = getDateForRange(timeRange)
+  let apiRadarCache: ApiRadarLeak[] | null = null
 
   // Count total work units across all sources
   let totalQueries = 0
@@ -902,10 +1103,12 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
       totalQueries += pp.searchQueries.length  // code search
       totalQueries += 1                         // gist search
       totalQueries += 1                         // commit search
+      totalQueries += 1                         // issue search
     }
     if (sources.includes('sourcegraph')) totalQueries += 2  // 2 queries per provider
     if (sources.includes('gitlab'))      totalQueries += 2  // 2 queries per provider
     if (sources.includes('grep.app'))    totalQueries += 2  // 2 queries per provider
+    if (sources.includes('apiradar'))    totalQueries += 1  // 1 query per provider
   }
 
   let currentQuery = 0
@@ -920,10 +1123,7 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
         if (signal?.aborted) return allResults
 
         currentQuery++
-        const fullQuery = dateFilter
-          ? `${query} pushed:>${dateFilter}`
-          : query
-
+        
         onProgress({
           currentProvider: pp.label,
           currentQuery,
@@ -934,43 +1134,73 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
         })
 
         try {
-          for (let page = 1; page <= maxPagesPerQuery; page++) {
-            if (signal?.aborted) return allResults
+          // Pass the tokens array to the search functions
+          const githubTokens = githubToken.split(',').map(t => t.trim()).filter(Boolean)
+          
+          // Shard query by time to bypass 1000 limit if Deep Scan is ON
+          // We will run the query multiple times with different date brackets
+          const timeShards = deepScan 
+             ? [
+                 dateFilter ? `pushed:>${dateFilter}` : 'pushed:>2024-01-01',
+                 'pushed:2023-01-01..2023-12-31',
+                 'pushed:2022-01-01..2022-12-31',
+                 'pushed:2021-01-01..2021-12-31',
+                 'pushed:<2020-12-31'
+               ]
+             : [dateFilter ? `pushed:>${dateFilter}` : '']
+             
+          for (const shard of timeShards) {
+             if (signal?.aborted) return allResults
+             const fullQuery = shard ? `${query} ${shard}` : query
 
-            const searchResult = await searchGitHubAPI(fullQuery, githubToken, page)
-            if (searchResult.items.length === 0) break
+             for (let page = 1; page <= maxPagesPerQuery; page++) {
+                if (signal?.aborted) return allResults
+    
+                const searchResult = await searchGitHubAPI(fullQuery, githubTokens, page)
+                if (searchResult.items.length === 0) break
 
-            for (const item of searchResult.items) {
+            // Batch process items for concurrent fetching
+            const batchSize = 5
+            for (let i = 0; i < searchResult.items.length; i += batchSize) {
               if (signal?.aborted) return allResults
-
-              let foundKeys: string[] = []
-              if (item.text_matches && item.text_matches.length > 0) {
-                const allFragments = item.text_matches.map(tm => tm.fragment).join('\n')
-                foundKeys = extractKeysFromText(allFragments, pp.patterns)
-              }
-
-              if (foundKeys.length === 0) {
-                const content = await fetchFileContent(item.repository.full_name, item.path, githubToken)
-                if (content) foundKeys = extractKeysFromText(content, pp.patterns)
-                try { await sleep(300, signal) } catch { return allResults }
-              }
-
-              for (const key of foundKeys) {
-                if (addKeyResult(key, pp, item.repository.full_name, item.repository.owner.login, item.path, item.html_url, 'code', seenKeys, allResults, onResult, onResultUpdate)) {
-                  onProgress({
-                    currentProvider: pp.label, currentQuery, totalQueries,
-                    keysFound: allResults.length, status: 'scanning',
-                    message: `🔑 Found in ${item.repository.full_name}`,
-                  })
+              
+              const batch = searchResult.items.slice(i, i + batchSize)
+              await Promise.all(batch.map(async (item) => {
+                let foundKeys: string[] = []
+                if (item.text_matches && item.text_matches.length > 0) {
+                  const allFragments = item.text_matches.map(tm => tm.fragment).join('\n')
+                  foundKeys = extractKeysFromText(allFragments, pp.patterns)
                 }
-              }
+
+                if (foundKeys.length === 0) {
+                  // For fetching files, any token works. We just use the first one from the array here to keep it simple, 
+                  // or randomly pick one to distribute load
+                  const randToken = githubTokens[Math.floor(Math.random() * githubTokens.length)]
+                  const content = await fetchFileContent(item.repository.full_name, item.path, randToken)
+                  if (content) foundKeys = extractKeysFromText(content, pp.patterns)
+                }
+
+                for (const key of foundKeys) {
+                  if (addKeyResult(key, pp, item.repository.full_name, item.repository.owner.login, item.path, item.html_url, 'code', seenKeys, allResults, onResult, onResultUpdate)) {
+                    onProgress({
+                      currentProvider: pp.label, currentQuery, totalQueries,
+                      keysFound: allResults.length, status: 'scanning',
+                      message: `🔑 Found in ${item.repository.full_name}`,
+                    })
+                  }
+                }
+              }))
+              
+              // Small delay between batches to avoid tripping secondary rate limits too fast
+              try { await sleep(300, signal) } catch { return allResults }
             }
 
             if (searchResult.items.length < 30) break
             try { await sleep(currentDelayMs, signal) } catch { return allResults }
-          }
-        } catch (err: any) {
-          if (err.name === 'AbortError') return allResults
+          } // end page loop
+        } // end shard loop
+        } catch (err: unknown) {
+          if ((err as Error).name === 'AbortError') return allResults
           if (err instanceof RateLimitError) {
             const waitSec = Math.min(err.retryAfterSeconds, 90)
             onProgress({ currentProvider: pp.label, currentQuery, totalQueries, keysFound: allResults.length, status: 'rate-limited', message: `Rate limited. Waiting ${waitSec}s...` })
@@ -978,7 +1208,7 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
             currentQuery--
             continue
           }
-          if (err.message === 'AUTH_ERROR') {
+          if ((err as Error).message === 'AUTH_ERROR') {
             onProgress({ currentProvider: pp.label, currentQuery, totalQueries, keysFound: allResults.length, status: 'error', message: 'Invalid GitHub token.' })
             return allResults
           }
@@ -990,85 +1220,166 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
       }
 
       // ─── Phase 2: Gist Search ────────────────────────────────────────
-      if (signal?.aborted) return allResults
-      currentQuery++
-      const gistQuery = pp.searchQueries[0]
-      onProgress({
-        currentProvider: pp.label, currentQuery, totalQueries,
-        keysFound: allResults.length, status: 'scanning',
-        message: `📋 GitHub Gists: "${gistQuery}"`,
-      })
+      const gistQueries = deepScan ? pp.searchQueries.slice(0, 3) : pp.searchQueries.slice(0, 1)
+      for (const gistQuery of gistQueries) {
+        if (signal?.aborted) return allResults
+        currentQuery++
+        
+        onProgress({
+          currentProvider: pp.label, currentQuery, totalQueries,
+          keysFound: allResults.length, status: 'scanning',
+          message: `📋 GitHub Gists: "${gistQuery}"`,
+        })
 
-      try {
-        const gistFullQuery = `${gistQuery} path:*.txt OR path:*.md OR path:*.env`
-        const gistResult = await searchGitHubGists(gistFullQuery, githubToken)
+        try {
+          const githubTokens = githubToken.split(',').map(t => t.trim()).filter(Boolean)
+          const gistFullQuery = `${gistQuery} path:*.txt OR path:*.md OR path:*.env`
+          const gistResult = deepScan 
+            ? await searchGitHubGists(gistFullQuery, githubTokens, 1) // First page
+            : await searchGitHubGists(gistFullQuery, githubTokens, 1)
+            
+          if (deepScan) {
+             // allow second page for gist if deep scan 
+             try {
+                const gistResultPage2 = await searchGitHubGists(gistFullQuery, githubTokens, 2)
+                gistResult.items.push(...gistResultPage2.items)
+             } catch { /* skip err for page 2 */}
+          }
 
-        for (const item of gistResult.items) {
+        for (let i = 0; i < gistResult.items.length; i += 5) {
           if (signal?.aborted) return allResults
+          
+          const batch = gistResult.items.slice(i, i + 5)
+          await Promise.all(batch.map(async (item) => {
+            let foundKeys: string[] = []
+            if (item.text_matches && item.text_matches.length > 0) {
+               const frags = item.text_matches.map(tm => tm.fragment).join('\n')
+               foundKeys = extractKeysFromText(frags, pp.patterns)
+            }
 
-          let foundKeys: string[] = []
-          if (item.text_matches && item.text_matches.length > 0) {
-            const frags = item.text_matches.map(tm => tm.fragment).join('\n')
-            foundKeys = extractKeysFromText(frags, pp.patterns)
-          }
-
-          for (const key of foundKeys) {
-            addKeyResult(key, pp, item.repository?.full_name || 'gist', item.repository?.owner?.login || 'unknown', item.path || 'gist', item.html_url, 'gist', seenKeys, allResults, onResult, onResultUpdate)
-          }
+            for (const key of foundKeys) {
+               addKeyResult(key, pp, item.repository?.full_name || 'gist', item.repository?.owner?.login || 'unknown', item.path || 'gist', item.html_url, 'gist', seenKeys, allResults, onResult, onResultUpdate)
+            }
+          }))
+          try { await sleep(100, signal) } catch { return allResults }
         }
-      } catch (err: any) {
-        if (err.name === 'AbortError') return allResults
+      } catch (err: unknown) {
+        if ((err as Error).name === 'AbortError') return allResults
         if (err instanceof RateLimitError) {
           try { await sleep(Math.min(err.retryAfterSeconds, 60) * 1000, signal) } catch { return allResults }
         }
       }
 
+      }
       try { await sleep(currentDelayMs, signal) } catch { return allResults }
 
       // ─── Phase 3: Commit Search ──────────────────────────────────────
-      if (signal?.aborted) return allResults
-      currentQuery++
-      const commitQuery = pp.searchQueries[0]
-      onProgress({
-        currentProvider: pp.label, currentQuery, totalQueries,
-        keysFound: allResults.length, status: 'scanning',
-        message: `📝 GitHub Commits: "${commitQuery}"`,
-      })
+      const commitQueries = deepScan ? pp.searchQueries.slice(0, 3) : pp.searchQueries.slice(0, 1)
+      for (const commitQuery of commitQueries) {
+        if (signal?.aborted) return allResults
+        currentQuery++
+        
+        onProgress({
+          currentProvider: pp.label, currentQuery, totalQueries,
+          keysFound: allResults.length, status: 'scanning',
+          message: `📝 GitHub Commits: "${commitQuery}"`,
+        })
 
       try {
+        const githubTokens = githubToken.split(',').map(t => t.trim()).filter(Boolean)
         const commitFullQuery = dateFilter
           ? `${commitQuery} committer-date:>${dateFilter}`
           : commitQuery
 
-        const commitResult = await searchGitHubCommits(commitFullQuery, githubToken)
+        const commitResult = await searchGitHubCommits(commitFullQuery, githubTokens)
 
-        for (const item of commitResult.items) {
+        for (let i = 0; i < commitResult.items.length; i += 5) {
           if (signal?.aborted) return allResults
 
-          let foundKeys: string[] = []
-          foundKeys.push(...extractKeysFromText(item.commit.message, pp.patterns))
-          if (item.text_matches && item.text_matches.length > 0) {
-            const frags = item.text_matches.map(tm => tm.fragment).join('\n')
-            foundKeys.push(...extractKeysFromText(frags, pp.patterns))
-          }
+          const batch = commitResult.items.slice(i, i + 5)
+          await Promise.all(batch.map(async (item) => {
+            const foundKeys: string[] = []
+            foundKeys.push(...extractKeysFromText(item.commit.message, pp.patterns))
+            if (item.text_matches && item.text_matches.length > 0) {
+               const frags = item.text_matches.map(tm => tm.fragment).join('\n')
+               foundKeys.push(...extractKeysFromText(frags, pp.patterns))
+            }
 
-          for (const key of foundKeys) {
-            addKeyResult(key, pp, item.repository.full_name, item.repository.owner.login, `commit/${item.sha.substring(0, 7)}`, item.html_url, 'commit', seenKeys, allResults, onResult, onResultUpdate)
-          }
+            for (const key of foundKeys) {
+               addKeyResult(key, pp, item.repository.full_name, item.repository.owner.login, `commit/${item.sha.substring(0, 7)}`, item.html_url, 'commit', seenKeys, allResults, onResult, onResultUpdate)
+            }
+          }))
+          try { await sleep(100, signal) } catch { return allResults }
         }
-      } catch (err: any) {
-        if (err.name === 'AbortError') return allResults
+      } catch (err: unknown) {
+        if ((err as Error).name === 'AbortError') return allResults
         if (err instanceof RateLimitError) {
           try { await sleep(Math.min(err.retryAfterSeconds, 60) * 1000, signal) } catch { return allResults }
         }
       }
 
-      try { await sleep(currentDelayMs, signal) } catch { return allResults }
+        try { await sleep(currentDelayMs, signal) } catch { return allResults }
+      } // end commit queries loop
+
+      // ─── Phase 4: Issues / PR Search ──────────────────────────────────────
+      const issueQueries = deepScan ? pp.searchQueries.slice(0, 3) : pp.searchQueries.slice(0, 1)
+      for (const issueQuery of issueQueries) {
+        if (signal?.aborted) return allResults
+        currentQuery++
+        
+        onProgress({
+          currentProvider: pp.label, currentQuery, totalQueries,
+          keysFound: allResults.length, status: 'scanning',
+          message: `💬 GitHub Issues: "${issueQuery}"`,
+        })
+
+        try {
+          const githubTokens = githubToken.split(',').map(t => t.trim()).filter(Boolean)
+          const issueFullQuery = dateFilter
+            ? `${issueQuery} updated:>${dateFilter}`
+            : issueQuery
+
+          const issueResult = await searchGitHubIssues(issueFullQuery, githubTokens)
+
+          for (let i = 0; i < issueResult.items.length; i += 5) {
+            if (signal?.aborted) return allResults
+
+            const batch = issueResult.items.slice(i, i + 5)
+            await Promise.all(batch.map(async (item) => {
+              const foundKeys: string[] = []
+              foundKeys.push(...extractKeysFromText(item.body || '', pp.patterns))
+              if (item.text_matches && item.text_matches.length > 0) {
+                 const frags = item.text_matches.map(tm => tm.fragment).join('\n')
+                 foundKeys.push(...extractKeysFromText(frags, pp.patterns))
+              }
+
+              for (const key of foundKeys) {
+                 // repo url is api.github.com/repos/OWNER/REPO. Extract owner/repo
+                 const repoMatch = item.repository_url.match(/repos\/([^/]+)\/([^/]+)/)
+                 const owner = repoMatch ? repoMatch[1] : 'unknown'
+                 const repoFullName = repoMatch ? `${repoMatch[1]}/${repoMatch[2]}` : 'unknown'
+                 
+                 addKeyResult(key, pp, repoFullName, owner, `issue💬`, item.html_url, 'issue', seenKeys, allResults, onResult, onResultUpdate)
+              }
+            }))
+            try { await sleep(100, signal) } catch { return allResults }
+          }
+        } catch (err: unknown) {
+          if ((err as Error).name === 'AbortError') return allResults
+          if (err instanceof RateLimitError) {
+            try { await sleep(Math.min(err.retryAfterSeconds, 60) * 1000, signal) } catch { return allResults }
+          }
+        }
+
+        try { await sleep(currentDelayMs, signal) } catch { return allResults }
+      } // end issues queries loop
+
     } // end GitHub
 
     // ═══════════════════════ SOURCEGRAPH ═══════════════════════
     if (sources.includes('sourcegraph')) {
-      const sgQueries = pp.searchQueries.slice(0, 2) // Use top 2 queries
+      const numQueries = deepScan ? Math.min(pp.searchQueries.length, 5) : 2
+      const sgQueries = pp.searchQueries.slice(0, numQueries)
       for (const query of sgQueries) {
         if (signal?.aborted) return allResults
         currentQuery++
@@ -1080,7 +1391,7 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
         })
 
         try {
-          const sgResults = await searchSourcegraph(query, signal)
+          const sgResults = await searchSourcegraph(query, deepScan, signal)
 
           for (const item of sgResults) {
             if (signal?.aborted) return allResults
@@ -1097,8 +1408,8 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
               }
             }
           }
-        } catch (err: any) {
-          if (err.name === 'AbortError') return allResults
+        } catch (err: unknown) {
+          if ((err as Error).name === 'AbortError') return allResults
         }
 
         try { await sleep(2000, signal) } catch { return allResults }
@@ -1107,7 +1418,8 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
 
     // ═══════════════════════ GITLAB ═══════════════════════
     if (sources.includes('gitlab') && gitlabToken) {
-      const glQueries = pp.searchQueries.slice(0, 2) // Use top 2 queries
+      const numQueries = deepScan ? Math.min(pp.searchQueries.length, 5) : 2
+      const glQueries = pp.searchQueries.slice(0, numQueries)
       for (const query of glQueries) {
         if (signal?.aborted) return allResults
         currentQuery++
@@ -1150,14 +1462,14 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
               }
             }
           }
-        } catch (err: any) {
-          if (err.name === 'AbortError') return allResults
+        } catch (err: unknown) {
+          if ((err as Error).name === 'AbortError') return allResults
           if (err instanceof RateLimitError) {
             const waitSec = Math.min(err.retryAfterSeconds, 60)
             onProgress({ currentProvider: pp.label, currentQuery, totalQueries, keysFound: allResults.length, status: 'rate-limited', message: `GitLab rate limited. Waiting ${waitSec}s...` })
             try { await sleep(waitSec * 1000, signal) } catch { return allResults }
           }
-          if (err.message === 'AUTH_ERROR') {
+          if ((err as Error).message === 'AUTH_ERROR') {
             onProgress({ currentProvider: pp.label, currentQuery, totalQueries, keysFound: allResults.length, status: 'error', message: 'Invalid GitLab token.' })
             // Skip remaining GitLab queries but don't return
             break
@@ -1173,7 +1485,8 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
 
     // ═══════════════════════ GREP.APP ═══════════════════════
     if (sources.includes('grep.app')) {
-      const gaQueries = pp.searchQueries.slice(0, 2) // Use top 2 queries
+      const numQueries = deepScan ? Math.min(pp.searchQueries.length, 5) : 2
+      const gaQueries = pp.searchQueries.slice(0, numQueries)
       for (const query of gaQueries) {
         if (signal?.aborted) return allResults
         currentQuery++
@@ -1206,13 +1519,150 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
               }
             }
           }
-        } catch (err: any) {
-          if (err.name === 'AbortError') return allResults
+        } catch (err: unknown) {
+          if ((err as Error).name === 'AbortError') return allResults
         }
 
         try { await sleep(2000, signal) } catch { return allResults }
       }
     } // end grep.app
+
+    // ═══════════════════════ HUGGING FACE ═══════════════════════
+    if (sources.includes('huggingface')) {
+      const numQueries = deepScan ? Math.min(pp.searchQueries.length, 5) : 1
+      const hfQueries = pp.searchQueries.slice(0, numQueries)
+      for (const query of hfQueries) {
+        if (signal?.aborted) return allResults
+        currentQuery++
+
+        onProgress({
+          currentProvider: pp.label, currentQuery, totalQueries,
+          keysFound: allResults.length, status: 'scanning',
+          message: `🤗 Hugging Face: "${query}"`,
+        })
+
+        try {
+          const limit = deepScan ? 20 : 5
+          const res = await fetch(`/api/hf-search/search/full-text?q=${encodeURIComponent(query)}&limit=${limit}`, { signal })
+            
+          if (res.ok) {
+            const data = await res.json()
+            if (data.hits && data.hits.length > 0) {
+              for (const hit of data.hits) {
+                if (signal?.aborted) return allResults
+                // Fetch the actual raw file content where it hit
+                try {
+                  const rawRes = await fetch(`https://huggingface.co/${hit.repoId}/raw/main/${hit.path}`, { signal })
+                  if (rawRes.ok) {
+                    const content = await rawRes.text()
+                    const foundKeys = extractKeysFromText(content, pp.patterns)
+
+                    for (const key of foundKeys) {
+                      const fileUrl = `https://huggingface.co/${hit.repoId}/blob/main/${hit.path}`
+                      if (addKeyResult(key, pp, hit.repoId, hit.repoId.split('/')[0] || 'unknown', hit.path, fileUrl, 'huggingface', seenKeys, allResults, onResult, onResultUpdate)) {
+                        onProgress({
+                          currentProvider: pp.label, currentQuery, totalQueries,
+                          keysFound: allResults.length, status: 'scanning',
+                          message: `🔑 Hugging Face: Found in ${hit.repoId}`,
+                        })
+                      }
+                    }
+                  }
+                } catch { /* ignore single fetch issues */ }
+                
+                try { await sleep(1500, signal) } catch { return allResults }
+              }
+            }
+          }
+        } catch (err: unknown) {
+          if ((err as Error).name === 'AbortError') return allResults
+        }
+
+        try { await sleep(2000, signal) } catch { return allResults }
+      }
+    } // end huggingface
+
+    // ═══════════════════════ API RADAR ═══════════════════════
+    if (sources.includes('apiradar')) {
+      if (signal?.aborted) return allResults
+      currentQuery++
+
+      onProgress({
+        currentProvider: pp.label, currentQuery, totalQueries,
+        keysFound: allResults.length, status: 'scanning',
+        message: `📡 API Radar: Checking live feed...`,
+      })
+
+      try {
+        if (!apiRadarCache) {
+          apiRadarCache = await fetchApiRadarLeaks(signal)
+        }
+
+        // Filter leaks for the current provider
+        // Apiradar uses lower case provider names like 'google', 'openai'
+        const providerLeaks = apiRadarCache.filter(l => 
+          l.provider.toLowerCase() === pp.provider.toLowerCase() || 
+          l.provider.toLowerCase().includes(pp.provider.toLowerCase())
+        )
+
+        for (const leak of providerLeaks) {
+          if (signal?.aborted) return allResults
+          
+          let content = ''
+          const branches = ['main', 'master', 'HEAD']
+          let rawUrls: string[] = []
+          let repoName = 'unknown'
+          let author = 'unknown'
+          
+          if (leak.repoUrl.includes('github.com')) {
+            const repoPath = leak.repoUrl.replace('https://github.com/', '').replace('http://github.com/', '').replace(/\/$/, '')
+            repoName = repoPath
+            author = repoPath.split('/')[0] || 'unknown'
+            rawUrls = branches.map(b => `https://raw.githubusercontent.com/${repoPath}/${b}/${leak.filePath}`)
+          } else if (leak.repoUrl.includes('gitlab.com')) {
+            const repoPath = leak.repoUrl.replace('https://gitlab.com/', '').replace('http://gitlab.com/', '').replace(/\/$/, '')
+            repoName = repoPath
+            author = repoPath.split('/')[0] || 'unknown'
+            rawUrls = branches.map(b => `https://gitlab.com/${repoPath}/-/raw/${b}/${leak.filePath}`)
+          } else {
+            continue // Unsupported repo host for raw extraction right now
+          }
+          
+          for (const rawUrl of rawUrls) {
+            if (signal?.aborted) return allResults
+            try {
+              const res = await fetch(rawUrl, { signal })
+              if (res.ok) {
+                content = await res.text()
+                break
+              }
+            } catch { /* ignore single fetch errors */ }
+          }
+          
+          if (content) {
+            const foundKeys = extractKeysFromText(content, pp.patterns)
+            
+            for (const key of foundKeys) {
+              const sourceUrl = leak.repoUrl.includes('github.com') 
+                ? `https://github.com/${repoName}/blob/HEAD/${leak.filePath}`
+                : `https://gitlab.com/${repoName}/-/blob/HEAD/${leak.filePath}`
+                
+              if (addKeyResult(key, pp, repoName, author, leak.filePath, sourceUrl, 'apiradar', seenKeys, allResults, onResult, onResultUpdate)) {
+                onProgress({
+                  currentProvider: pp.label, currentQuery, totalQueries,
+                  keysFound: allResults.length, status: 'scanning',
+                  message: `🔑 API Radar: Found in ${repoName}`,
+                })
+              }
+            }
+          }
+          
+          try { await sleep(200, signal) } catch { return allResults }
+        }
+      } catch (err: unknown) {
+        if ((err as Error).name === 'AbortError') return allResults
+      }
+    } // end apiradar
 
   } // end provider loop
 

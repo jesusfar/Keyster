@@ -66,6 +66,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/huggingface/, ''),
       },
+      '/api/hf-search': {
+        target: 'https://huggingface.co/api',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/hf-search/, ''),
+      },
       '/api/deepseek': {
         target: 'https://api.deepseek.com/v1',
         changeOrigin: true,
@@ -95,6 +100,11 @@ export default defineConfig({
         target: 'https://grep.app/api',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/grepapp/, ''),
+      },
+      '/api/apiradar': {
+        target: 'https://apiradar.live/api',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/apiradar/, ''),
       },
     },
   },
