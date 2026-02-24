@@ -116,7 +116,3 @@ Before contributing:
 ## 📄 License
 
 This project is tailored for Keyster. License details to be added.
-
----
-
-**Made with ❤️ by Jesus | Enhanced with 🤖 Claude Code**
