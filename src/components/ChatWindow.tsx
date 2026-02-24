@@ -16,6 +16,7 @@ export function ChatWindow({ session }: ChatWindowProps) {
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [attachedImages, setAttachedImages] = useState<string[]>([])
+  const [agentMode, setAgentMode] = useState(false)
   
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -66,7 +67,8 @@ export function ChatWindow({ session }: ChatWindowProps) {
         session.provider,
         session.apiKey,
         session.model,
-        newMessages
+        newMessages,
+        agentMode
       )
 
       setMessages([
@@ -78,7 +80,7 @@ export function ChatWindow({ session }: ChatWindowProps) {
       showToast(errorMessage, 'error')
       setMessages([
         ...newMessages,
-        { role: 'error', content: errorMessage } as unknown as Message
+        { role: 'error', content: errorMessage }
       ])
     } finally {
       setIsLoading(false)
@@ -151,7 +153,7 @@ export function ChatWindow({ session }: ChatWindowProps) {
               <span></span>
               <span></span>
             </div>
-            <span className="typing-label">{session?.model} is thinking...</span>
+            <span className="typing-label">{session?.model} is thinking{agentMode ? ' (Agent Mode Active)' : ''}...</span>
           </div>
         )}
         <div ref={messagesEndRef} />
@@ -194,6 +196,33 @@ export function ChatWindow({ session }: ChatWindowProps) {
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+            </svg>
+          </button>
+          
+          <button
+            type="button"
+            className={`agent-toggle-btn ${agentMode ? 'active' : ''}`}
+            title={agentMode ? "Agent Mode ON: Can execute commands and read files" : "Agent Mode OFF"}
+            onClick={() => setAgentMode(!agentMode)}
+            disabled={!session || isLoading || !window.electronAPI}
+            style={{
+              background: agentMode ? 'var(--accent-glow)' : 'transparent',
+              color: agentMode ? 'var(--accent-color)' : 'var(--text-muted)',
+              border: 'none',
+              cursor: (!session || isLoading || !window.electronAPI) ? 'not-allowed' : 'pointer',
+              padding: '0.5rem',
+              borderRadius: 'var(--radius-sm)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              transition: 'all 0.2s'
+            }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 2v20" />
+              <path d="m4.93 10.93 14.14 14.14" />
+              <path d="m2 22 20-20" />
+              <path d="m10.93 4.93 14.14 14.14" />
             </svg>
           </button>
           

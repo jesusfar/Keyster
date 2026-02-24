@@ -2,7 +2,7 @@
  * Shared types for scanner modules
  */
 
-export type KeyStatus = 'checking' | 'valid' | 'invalid' | 'rate_limited' | 'error'
+export type KeyStatus = 'checking' | 'valid-premium' | 'valid-standard' | 'valid' | 'invalid' | 'rate_limited' | 'error'
 export type SearchSource = 'code' | 'gist' | 'commit' | 'issue' | 'gitlab' | 'sourcegraph' | 'grep.app' | 'apiradar' | 'huggingface'
 export type ScanSourcePlatform = 'github' | 'gitlab' | 'sourcegraph' | 'grep.app' | 'apiradar' | 'huggingface'
 export type TimeRange = '1h' | '24h' | '7d' | '30d' | 'all'

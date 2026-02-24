@@ -12,8 +12,8 @@ export interface ProviderPattern {
   searchQueries: string[]
 }
 
-export type KeyStatus = 'checking' | 'valid' | 'invalid' | 'rate_limited' | 'error'
-export type SearchSource = 'code' | 'gist' | 'commit' | 'issue' | 'gitlab' | 'sourcegraph' | 'grep.app' | 'apiradar'
+export type KeyStatus = 'checking' | 'valid-premium' | 'valid-standard' | 'valid' | 'invalid' | 'rate_limited' | 'error'
+export type SearchSource = 'code' | 'gist' | 'commit' | 'issue' | 'gitlab' | 'sourcegraph' | 'grep.app' | 'apiradar' | 'huggingface'
 export type ScanSourcePlatform = 'github' | 'gitlab' | 'sourcegraph' | 'grep.app' | 'apiradar' | 'huggingface'
 
 export interface ScanResult {
@@ -306,73 +306,10 @@ export const PROVIDER_PATTERNS: ProviderPattern[] = [
   },
 ]
 
-// ─── Provider API Endpoints (for key validation) ────────────────────────────
+// ─── Key Validation (single source in scanners/validation.ts) ────────────────
 
-const VALIDATION_ENDPOINTS: Record<string, { url: string, method?: string, body?: unknown, headers: (key: string) => Record<string, string> }> = {
-  anthropic: {
-    url: '/api/anthropic/messages',
-    method: 'POST',
-    body: { model: 'claude-3-haiku-20240307', max_tokens: 1, messages: [{role: 'user', content: 'hi'}] },
-    headers: (key) => ({ 'x-api-key': key, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }),
-  },
-  openai: {
-    url: '/api/openai/models',
-    headers: (key) => ({ 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }),
-  },
-  google: {
-    url: '/api/google/models',
-    headers: () => ({ 'Content-Type': 'application/json' }),
-  },
-  openrouter: {
-    url: '/api/openrouter/auth/key',
-    headers: (key) => ({ 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }),
-  },
-  xai: {
-    url: '/api/xai/models',
-    headers: (key) => ({ 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }),
-  },
-  groq: {
-    url: '/api/groq/models',
-    headers: (key) => ({ 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }),
-  },
-  cerebras: {
-    url: '/api/cerebras/models',
-    headers: (key) => ({ 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }),
-  },
-}
-
-/**
- * Validate an API key by making a lightweight request to the provider's API
- */
-export async function validateKey(key: string, provider: string): Promise<KeyStatus> {
-  const endpoint = VALIDATION_ENDPOINTS[provider]
-  if (!endpoint) return 'error'
-
-  try {
-    // Google uses query param for key
-    const url = provider === 'google'
-      ? `${endpoint.url}?key=${key}`
-      : endpoint.url
-
-    const fetchOptions: RequestInit = {
-      method: endpoint.method || 'GET',
-      headers: endpoint.headers(key),
-    }
-
-    if (endpoint.body) {
-      fetchOptions.body = JSON.stringify(endpoint.body)
-    }
-
-    const response = await fetch(url, fetchOptions)
-
-    if (response.ok) return 'valid'
-    if (response.status === 401 || response.status === 403) return 'invalid'
-    if (response.status === 429) return 'rate_limited'
-    return 'invalid'
-  } catch {
-    return 'error'
-  }
-}
+import { validateKey } from './scanners/validation'
+export { validateKey }
 
 // ─── GitHub REST API Search ──────────────────────────────────────────────────
 
@@ -878,6 +815,8 @@ function addKeyResult(
   // Validate in background
   validateKey(key, pp.provider).then(status => {
     onResultUpdate(key, status)
+  }).catch(() => {
+    onResultUpdate(key, 'error')
   })
   return true
 }
@@ -1057,28 +996,7 @@ async function searchGrepApp(
 }
 
 // ─── API Radar Search (free, no auth) ──────────────────────────────────────
-
-const APIRADAR_API = '/api/apiradar'
-
-interface ApiRadarLeak {
-  id: string
-  provider: string
-  redactedKey: string
-  repoUrl: string
-  filePath: string
-  leakIntroducedAt: string
-}
-
-async function fetchApiRadarLeaks(signal?: AbortSignal): Promise<ApiRadarLeak[]> {
-  try {
-    const res = await fetch(`${APIRADAR_API}/leaks`, { signal })
-    if (!res.ok) return []
-    const data = await res.json()
-    return data.leaks || []
-  } catch {
-    return []
-  }
-}
+// Note: API Radar scanning is now handled by the dedicated apiradar.ts module
 
 // ─── Main Scan Orchestrator ──────────────────────────────────────────────────
 
@@ -1094,7 +1012,6 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
   const seenKeys = new Set<string>()
   const selectedPatterns = PROVIDER_PATTERNS.filter(p => providers.includes(p.provider))
   const dateFilter = getDateForRange(timeRange)
-  let apiRadarCache: ApiRadarLeak[] | null = null
 
   // Count total work units across all sources
   let totalQueries = 0
@@ -1587,80 +1504,34 @@ export async function scanForKeys(options: ScanOptions): Promise<ScanResult[]> {
       if (signal?.aborted) return allResults
       currentQuery++
 
-      onProgress({
-        currentProvider: pp.label, currentQuery, totalQueries,
-        keysFound: allResults.length, status: 'scanning',
-        message: `📡 API Radar: Checking live feed...`,
-      })
-
       try {
-        if (!apiRadarCache) {
-          apiRadarCache = await fetchApiRadarLeaks(signal)
-        }
+        // Use enhanced API Radar scanner module
+        const { scanApiRadar } = await import('./scanners/apiradar')
 
-        // Filter leaks for the current provider
-        // Apiradar uses lower case provider names like 'google', 'openai'
-        const providerLeaks = apiRadarCache.filter(l => 
-          l.provider.toLowerCase() === pp.provider.toLowerCase() || 
-          l.provider.toLowerCase().includes(pp.provider.toLowerCase())
-        )
-
-        for (const leak of providerLeaks) {
-          if (signal?.aborted) return allResults
-          
-          let content = ''
-          const branches = ['main', 'master', 'HEAD']
-          let rawUrls: string[] = []
-          let repoName = 'unknown'
-          let author = 'unknown'
-          
-          if (leak.repoUrl.includes('github.com')) {
-            const repoPath = leak.repoUrl.replace('https://github.com/', '').replace('http://github.com/', '').replace(/\/$/, '')
-            repoName = repoPath
-            author = repoPath.split('/')[0] || 'unknown'
-            rawUrls = branches.map(b => `https://raw.githubusercontent.com/${repoPath}/${b}/${leak.filePath}`)
-          } else if (leak.repoUrl.includes('gitlab.com')) {
-            const repoPath = leak.repoUrl.replace('https://gitlab.com/', '').replace('http://gitlab.com/', '').replace(/\/$/, '')
-            repoName = repoPath
-            author = repoPath.split('/')[0] || 'unknown'
-            rawUrls = branches.map(b => `https://gitlab.com/${repoPath}/-/raw/${b}/${leak.filePath}`)
-          } else {
-            continue // Unsupported repo host for raw extraction right now
-          }
-          
-          for (const rawUrl of rawUrls) {
-            if (signal?.aborted) return allResults
-            try {
-              const res = await fetch(rawUrl, { signal })
-              if (res.ok) {
-                content = await res.text()
-                break
-              }
-            } catch { /* ignore single fetch errors */ }
-          }
-          
-          if (content) {
-            const foundKeys = extractKeysFromText(content, pp.patterns)
-            
-            for (const key of foundKeys) {
-              const sourceUrl = leak.repoUrl.includes('github.com') 
-                ? `https://github.com/${repoName}/blob/HEAD/${leak.filePath}`
-                : `https://gitlab.com/${repoName}/-/blob/HEAD/${leak.filePath}`
-                
-              if (addKeyResult(key, pp, repoName, author, leak.filePath, sourceUrl, 'apiradar', seenKeys, allResults, onResult, onResultUpdate)) {
-                onProgress({
-                  currentProvider: pp.label, currentQuery, totalQueries,
-                  keysFound: allResults.length, status: 'scanning',
-                  message: `🔑 API Radar: Found in ${repoName}`,
-                })
-              }
-            }
-          }
-          
-          try { await sleep(200, signal) } catch { return allResults }
-        }
+        await scanApiRadar(pp, {
+          providerPattern: pp,
+          seenKeys,
+          allResults,
+          onResult,
+          onResultUpdate,
+          signal,
+        }, {
+          onProgress: (progress: Partial<ScanProgress>) => {
+            onProgress({
+              currentProvider: pp.label,
+              currentQuery,
+              totalQueries,
+              keysFound: allResults.length,
+              status: 'scanning',
+              message: '',
+              ...progress,
+            })
+          },
+          signal,
+        })
       } catch (err: unknown) {
         if ((err as Error).name === 'AbortError') return allResults
+        console.error('API Radar scanner error:', err)
       }
     } // end apiradar
 

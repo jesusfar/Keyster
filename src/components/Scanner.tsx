@@ -6,6 +6,7 @@ import './Scanner.css'
 
 // ─── Persistence ─────────────────────────────────────────────────────────────
 const STORAGE_KEY = 'keyster_scan_results'
+const PROXY_PORT_KEY = 'keyster_proxy_port'
 
 function saveResults(results: ScanResult[]) {
   try {
@@ -120,6 +121,78 @@ export function Scanner() {
   })
   const abortRef = useRef<AbortController | null>(null)
   const { showToast } = useToast()
+  
+  // Proxy state
+  const [proxyPort, setProxyPort] = useState(() => Number(localStorage.getItem(PROXY_PORT_KEY)) || 8080)
+  const [proxyRunning, setProxyRunning] = useState(false)
+  const [proxyLogs, setProxyLogs] = useState<string[]>([])
+  const proxyLogsEndRef = useRef<HTMLDivElement>(null)
+
+  // Auto-scroll proxy logs
+  useEffect(() => {
+    proxyLogsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [proxyLogs])
+
+  // Subscribe to proxy logs
+  useEffect(() => {
+    if (window.electronAPI) {
+      const unsubscribe = window.electronAPI.onLog?.((msg: string) => {
+         setProxyLogs(prev => [...prev.slice(-49), `[${new Date().toLocaleTimeString()}] ${msg}`])
+      }) || window.electronAPI.onProxyLog?.((msg: string) => {
+         setProxyLogs(prev => [...prev.slice(-49), `[${new Date().toLocaleTimeString()}] ${msg}`])
+      })
+      return unsubscribe
+    }
+  }, [])
+
+  // Sync valid keys to proxy
+  useEffect(() => {
+    if (proxyRunning && window.electronAPI?.updateProxyKeys) {
+        // Group valid keys by provider
+        const keysByProvider: Record<string, string[]> = {}
+        const validResults = results.filter(r => r.keyStatus.startsWith('valid'))
+        
+        for (const r of validResults) {
+            if (!keysByProvider[r.provider]) keysByProvider[r.provider] = []
+            keysByProvider[r.provider].push(r.key)
+        }
+        window.electronAPI.updateProxyKeys(keysByProvider)
+    }
+  }, [results, proxyRunning])
+
+  const toggleProxy = async () => {
+     if (!window.electronAPI) {
+         showToast('Electron backend is not available.', 'error')
+         return
+     }
+     
+     if (proxyRunning) {
+         const res = await window.electronAPI.stopProxy()
+         if (res.success) {
+             setProxyRunning(false)
+             setProxyLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Proxy stopped.`])
+         } else {
+             showToast(res.error || 'Failed to stop proxy', 'error')
+         }
+     } else {
+         localStorage.setItem(PROXY_PORT_KEY, proxyPort.toString())
+         setProxyLogs([])
+         const res = await window.electronAPI.startProxy(proxyPort)
+         if (res.success) {
+             setProxyRunning(true)
+             // Manually trigger the sync here as well
+             const keysByProvider: Record<string, string[]> = {}
+             const validResults = results.filter(r => r.keyStatus.startsWith('valid'))
+             for (const r of validResults) {
+                 if (!keysByProvider[r.provider]) keysByProvider[r.provider] = []
+                 keysByProvider[r.provider].push(r.key)
+             }
+             window.electronAPI.updateProxyKeys(keysByProvider)
+         } else {
+             showToast(res.error || 'Failed to start proxy', 'error')
+         }
+     }
+  }
 
   // Persist results whenever they change
   useEffect(() => {
@@ -615,11 +688,13 @@ export function Scanner() {
           {filteredResults.length > 0 && (
             <div className="results-grid">
               {filteredResults.map((r, i) => (
-                <div key={i} className={`leak-card ${r.keyStatus === 'valid' ? 'card-valid-glow' : ''}`}>
+                <div key={i} className={`leak-card ${r.keyStatus.startsWith('valid') ? 'card-valid-glow' : ''}`}>
                   <div className="leak-card-header">
                     <code className="leak-key">{r.key}</code>
                     <span className={`key-status status-${r.keyStatus}`}>
                       {r.keyStatus === 'checking' && '🔄 Checking...'}
+                      {r.keyStatus === 'valid-premium' && '⭐ Premium (Active)'}
+                      {r.keyStatus === 'valid-standard' && '✅ Standard (Active)'}
                       {r.keyStatus === 'valid' && '✅ Valid'}
                       {r.keyStatus === 'invalid' && '❌ Invalid'}
                       {r.keyStatus === 'rate_limited' && '⏳ Rate Limited'}
@@ -668,6 +743,73 @@ export function Scanner() {
               ))}
             </div>
           )}
+
+          {/* Local API Proxy Configuration */}
+          <div className="proxy-section">
+             <div className="proxy-header">
+                <div className="proxy-title">
+                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                     <path d="M12 2v20" />
+                     <path d="m4.93 10.93 14.14 14.14" />
+                     <path d="m2 22 20-20" />
+                     <path d="m10.93 4.93 14.14 14.14" />
+                   </svg>
+                   Local API Proxy
+                   <span className={`proxy-status ${proxyRunning ? 'active' : 'inactive'}`}>
+                      {proxyRunning ? 'Running' : 'Stopped'}
+                   </span>
+                </div>
+                <div className="proxy-controls">
+                   <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>PORT:</label>
+                   <input 
+                      type="number" 
+                      className="proxy-port-input" 
+                      value={proxyPort} 
+                      onChange={(e) => setProxyPort(parseInt(e.target.value) || 8080)}
+                      disabled={proxyRunning}
+                   />
+                   <button className="btn-proxy-toggle" onClick={toggleProxy}>
+                      {proxyRunning ? 'Stop Proxy' : 'Start Proxy'}
+                   </button>
+                </div>
+             </div>
+             
+             {window.electronAPI ? (
+               <>
+                 <div className="config-hint" style={{ marginTop: '-0.3rem' }}>
+                    Point Cursor, Cline, or Aider to <code style={{color:'var(--accent-color)'}}>http://localhost:{proxyPort}/[provider]</code> (e.g., anthropic, openai). The proxy automatically intercepts and rotates your valid keys below.
+                 </div>
+
+                 {proxyRunning && validCount > 0 && (
+                   <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.2rem' }}>
+                      <span className="config-label">Active Key Pool (Injecting into Proxy)</span>
+                      <div className="proxy-keys-pool">
+                         {Array.from(new Set(results.filter(r => r.keyStatus.startsWith('valid')).map(r => r.provider))).map(provider => {
+                             const pKeys = results.filter(r => r.keyStatus.startsWith('valid') && r.provider === provider)
+                             return (
+                               <span key={provider} className={`proxy-key-badge badge-${provider}`}>
+                                  {provider.toUpperCase()} ({pKeys.length} key{pKeys.length > 1 ? 's' : ''})
+                               </span>
+                             )
+                         })}
+                      </div>
+                   </div>
+                 )}
+
+                 <div className="proxy-logs">
+                    {proxyLogs.length === 0 && <span style={{ opacity: 0.5 }}>Waiting for proxy activity...</span>}
+                    {proxyLogs.map((log, i) => (
+                       <p key={i}>{log}</p>
+                    ))}
+                    <div ref={proxyLogsEndRef} />
+                 </div>
+               </>
+             ) : (
+                <div style={{ padding: '0.5rem', background: 'rgba(255,107,107,0.1)', color: 'var(--error-color)', borderRadius: '4px', fontSize: '0.8rem' }}>
+                   ⚠️ Electron backend is not available. Please run <code>npm run dev:electron</code> to use the Local Proxy.
+                </div>
+             )}
+          </div>
 
           {/* Empty State */}
           {!isScanning && progress.status === 'idle' && results.length === 0 && (

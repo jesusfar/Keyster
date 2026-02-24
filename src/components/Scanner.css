@@ -1333,3 +1333,119 @@
     font-size: 0.68rem;
   }
 }
+
+/* ─── Proxy Section ───────────────────────────────────────────────────────── */
+
+.proxy-section {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.proxy-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.proxy-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.proxy-status {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.proxy-status.active {
+  background: rgba(0, 255, 157, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(0, 255, 157, 0.3);
+  animation: pulse 2s infinite;
+}
+
+.proxy-status.inactive {
+  background: rgba(255, 107, 107, 0.1);
+  color: var(--error-color);
+  border: 1px solid rgba(255, 107, 107, 0.2);
+}
+
+.proxy-controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.proxy-port-input {
+  width: 80px;
+  padding: 0.4rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  text-align: center;
+  font-family: inherit;
+  font-size: 0.8rem;
+}
+
+.btn-proxy-toggle {
+  padding: 0.4rem 1rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  transition: all 0.2s;
+}
+
+.btn-proxy-toggle:not(:disabled):hover {
+  border-color: var(--accent-color);
+  color: var(--accent-light);
+}
+
+.proxy-keys-pool {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.proxy-key-badge {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  padding: 0.2rem 0.5rem;
+  font-size: 0.7rem;
+  border-radius: 4px;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  color: var(--text-secondary);
+}
+
+.proxy-logs {
+  background: #000;
+  color: #a78bfa;
+  font-family: "JetBrains Mono", "Fira Code", monospace;
+  font-size: 0.7rem;
+  padding: 0.75rem;
+  border-radius: var(--radius-sm);
+  height: 120px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+}
+
+.proxy-logs p {
+  margin: 0 0 0.25rem 0;
+}
